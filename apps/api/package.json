@@ -1,0 +1,24 @@
+{
+  "name": "@forge/api",
+  "private": true,
+  "version": "0.0.1",
+  "scripts": {
+    "dev": "bun run --env-file=../../.env --watch src/index.ts",
+    "build": "bun build src/index.ts --outdir dist --target bun",
+    "test": "bun test",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@forge/agents": "workspace:*",
+    "@forge/logger": "workspace:*",
+    "@forge/schema": "workspace:*",
+    "@supabase/supabase-js": "^2.99.3",
+    "hono": "^4.4.0",
+    "zod": "^3.23.0"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "@types/node": "^25.5.0",
+    "typescript": "^5.5.0"
+  }
+}

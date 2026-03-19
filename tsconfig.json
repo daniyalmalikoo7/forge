@@ -1,0 +1,12 @@
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "paths": {
+      "@forge/schema": ["./packages/schema/src"],
+      "@forge/agents": ["./packages/agents/src"],
+      "@forge/prompts": ["./packages/prompts/src"],
+      "@forge/evaluators": ["./packages/evaluators/src"],
+      "@forge/logger": ["./packages/logger/src"]
+    }
+  }
+}

@@ -1,0 +1,13 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "paths": {
+      "@forge/agents": ["./src"],
+      "@forge/schema": ["../schema/src"],
+      "@forge/prompts": ["../prompts/src"],
+      "@forge/logger": ["../logger/src"]
+    }
+  },
+  "include": ["src"],
+  "exclude": ["node_modules"]
+}

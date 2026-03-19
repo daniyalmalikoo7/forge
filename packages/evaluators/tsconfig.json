@@ -1,0 +1,11 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "paths": {
+      "@forge/evaluators": ["./src"],
+      "@forge/schema": ["../schema/src"]
+    }
+  },
+  "include": ["src"],
+  "exclude": ["node_modules"]
+}
