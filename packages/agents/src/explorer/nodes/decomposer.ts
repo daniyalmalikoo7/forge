@@ -1,21 +1,51 @@
-import { ChatAnthropic } from "@langchain/anthropic";
 import { decomposerPrompt } from "@forge/prompts";
 import type { AgentFlag } from "@forge/schema";
+import { getModel } from "../../lib/model.ts";
 import {
   DecompositionResultSchema,
   type ExplorerState,
 } from "../../types.ts";
 
-let _model: ChatAnthropic | null = null;
-function getModel(): ChatAnthropic {
-  if (!_model) {
-    _model = new ChatAnthropic({
-      modelName: "claude-sonnet-4-5-20250514",
-      temperature: 0,
-      maxTokens: 4096,
+const DIMENSION_KEYS = [
+  "business_dimension",
+  "system_dimension",
+  "technical_dimension",
+  "user_dimension",
+  "constraints_dimension",
+] as const;
+
+function normaliseOutput(raw: Record<string, unknown>): Record<string, unknown> {
+  for (const key of DIMENSION_KEYS) {
+    const val = raw[key];
+    if (val !== null && val !== undefined && typeof val === "object") {
+      // LLM returned an object — extract text or stringify
+      const obj = val as Record<string, unknown>;
+      if (typeof obj["text"] === "string") {
+        console.warn(`[decomposer] normalised ${key}: extracted .text from object`);
+        raw[key] = obj["text"];
+      } else if (typeof obj["description"] === "string") {
+        console.warn(`[decomposer] normalised ${key}: extracted .description from object`);
+        raw[key] = obj["description"];
+      } else {
+        console.warn(`[decomposer] normalised ${key}: JSON.stringified object`);
+        raw[key] = JSON.stringify(val);
+      }
+    }
+  }
+
+  // Remove null field_path from agent_flags
+  if (Array.isArray(raw["agent_flags"])) {
+    raw["agent_flags"] = (raw["agent_flags"] as Record<string, unknown>[]).map((f) => {
+      if (f["field_path"] === null) {
+        console.warn("[decomposer] normalised null field_path — removed key");
+        const { field_path: _, ...rest } = f;
+        return rest;
+      }
+      return f;
     });
   }
-  return _model;
+
+  return raw;
 }
 
 export async function decomposerNode(
@@ -43,7 +73,14 @@ export async function decomposerNode(
         ? response.content
         : (response.content[0] as { text: string }).text;
 
-    const parsed = DecompositionResultSchema.parse(JSON.parse(text));
+    const cleaned = text
+      .replace(/^```(?:json)?\s*/i, "")
+      .replace(/\s*```\s*$/, "")
+      .trim();
+
+    const rawJson = JSON.parse(cleaned) as Record<string, unknown>;
+    const normalised = normaliseOutput(rawJson);
+    const parsed = DecompositionResultSchema.parse(normalised);
 
     const flags: AgentFlag[] = [...parsed.agent_flags];
 

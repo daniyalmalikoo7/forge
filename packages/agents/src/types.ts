@@ -1,5 +1,15 @@
 import { z } from "zod";
-import { AgentFlagSchema, DiscoveryDocumentSchema } from "@forge/schema";
+import {
+  AgentFlagSchema,
+  DiscoveryDocumentSchema,
+  AlternativeApproachSchema,
+  TechnicalPatternSchema,
+  KnownPitfallSchema,
+  PriorArtSchema,
+  FunctionalRequirementSchema,
+  NonFunctionalRequirementSchema,
+  ScaleProfileSchema,
+} from "@forge/schema";
 import { Annotation } from "@langchain/langgraph";
 
 // ─── Clarifier output ────────────────────────────────────────────────────────
@@ -27,24 +37,24 @@ export const DecompositionResultSchema = z.object({
 });
 export type DecompositionResult = z.infer<typeof DecompositionResultSchema>;
 
-// ─── Research output (stub schema — completed in Phase 7) ────────────────────
+// ─── Research output ─────────────────────────────────────────────────────────
 
 export const ResearchResultSchema = z.object({
-  alternatives_considered: z.array(z.unknown()),
-  relevant_patterns: z.array(z.unknown()),
-  known_pitfalls: z.array(z.unknown()),
-  prior_art: z.array(z.unknown()),
+  alternatives_considered: z.array(AlternativeApproachSchema),
+  relevant_patterns: z.array(TechnicalPatternSchema),
+  known_pitfalls: z.array(KnownPitfallSchema),
+  prior_art: z.array(PriorArtSchema),
   confidence: z.number().min(0).max(1),
   agent_flags: z.array(AgentFlagSchema),
 });
 export type ResearchResult = z.infer<typeof ResearchResultSchema>;
 
-// ─── Requirements output (stub schema — completed in Phase 7) ────────────────
+// ─── Requirements output ─────────────────────────────────────────────────────
 
 export const RequirementsResultSchema = z.object({
-  functional: z.array(z.unknown()),
-  non_functional: z.array(z.unknown()),
-  scale_profile: z.unknown().optional(),
+  functional: z.array(FunctionalRequirementSchema),
+  non_functional: z.array(NonFunctionalRequirementSchema),
+  scale_profile: ScaleProfileSchema,
   confidence: z.number().min(0).max(1),
   agent_flags: z.array(AgentFlagSchema),
 });

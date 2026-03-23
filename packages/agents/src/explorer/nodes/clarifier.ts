@@ -1,21 +1,39 @@
-import { ChatAnthropic } from "@langchain/anthropic";
 import { clarifierPrompt } from "@forge/prompts";
 import type { AgentFlag } from "@forge/schema";
+import { getModel } from "../../lib/model.ts";
 import {
   ClarificationResultSchema,
   type ExplorerState,
 } from "../../types.ts";
 
-let _model: ChatAnthropic | null = null;
-function getModel(): ChatAnthropic {
-  if (!_model) {
-    _model = new ChatAnthropic({
-      modelName: "claude-sonnet-4-5-20250514",
-      temperature: 0,
-      maxTokens: 4096,
+function normaliseOutput(raw: Record<string, unknown>): Record<string, unknown> {
+  // Coerce null answers to empty string
+  if (Array.isArray(raw["clarifying_questions"])) {
+    raw["clarifying_questions"] = (raw["clarifying_questions"] as Record<string, unknown>[]).map((q) => {
+      if (q["answer"] === null || q["answer"] === undefined) {
+        console.warn("[clarifier] normalised null answer field");
+        return { ...q, answer: "" };
+      }
+      return q;
+    });
+  } else {
+    console.warn("[clarifier] normalised missing clarifying_questions to []");
+    raw["clarifying_questions"] = [];
+  }
+
+  // Remove null field_path from agent_flags (Zod expects string | undefined, not null)
+  if (Array.isArray(raw["agent_flags"])) {
+    raw["agent_flags"] = (raw["agent_flags"] as Record<string, unknown>[]).map((f) => {
+      if (f["field_path"] === null) {
+        console.warn("[clarifier] normalised null field_path — removed key");
+        const { field_path: _, ...rest } = f;
+        return rest;
+      }
+      return f;
     });
   }
-  return _model;
+
+  return raw;
 }
 
 export async function clarifierNode(
@@ -41,7 +59,14 @@ export async function clarifierNode(
         ? response.content
         : (response.content[0] as { text: string }).text;
 
-    const parsed = ClarificationResultSchema.parse(JSON.parse(text));
+    const cleaned = text
+      .replace(/^```(?:json)?\s*/i, "")
+      .replace(/\s*```\s*$/, "")
+      .trim();
+
+    const rawJson = JSON.parse(cleaned) as Record<string, unknown>;
+    const normalised = normaliseOutput(rawJson);
+    const parsed = ClarificationResultSchema.parse(normalised);
 
     const flags: AgentFlag[] = [...parsed.agent_flags];
 

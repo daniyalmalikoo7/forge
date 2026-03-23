@@ -9,4 +9,10 @@ export {
   type ClarifierVariables,
   decomposerPrompt,
   type DecomposerVariables,
+  researchPrompt,
+  type ResearchVariables,
+  requirementsPrompt,
+  type RequirementsVariables,
+  synthesisPrompt,
+  type SynthesisVariables,
 } from "./explorer/index.ts";
