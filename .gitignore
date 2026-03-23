@@ -35,3 +35,9 @@ report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
 
 # Supabase CLI local state
 supabase/.temp/
+
+# Next.js
+.next/
+
+# Next.js env types
+next-env.d.ts

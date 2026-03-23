@@ -337,6 +337,98 @@ projectsRouter.post("/:id/discovery/approve", async (c) => {
   return c.json({ status: "approved", document: data });
 });
 
+// POST /api/projects/:id/explore/refine — re-run with resolved flags
+projectsRouter.post("/:id/explore/refine", async (c) => {
+  const projectId = c.req.param("id");
+  const body = await c.req.json();
+  const resolvedFlags = (body as Record<string, unknown>).resolved_flags as Array<{ id: string; resolved_answer: string }> ?? [];
+  const resolvedQuestions = (body as Record<string, unknown>).resolved_questions as Array<{ id: string; resolved_answer: string }> ?? [];
+
+  // Load existing problem_statement
+  let problemStatement: string | null = null;
+  if (dbAvailable()) {
+    const db = adminClient();
+    const { data } = await db
+      .from("projects")
+      .select("problem_statement")
+      .eq("id", projectId)
+      .single();
+    if (data) problemStatement = data.problem_statement;
+
+    await db
+      .from("projects")
+      .update({ status: "exploring" })
+      .eq("id", projectId);
+  }
+
+  if (!problemStatement) {
+    throw appError({
+      message: "Project not found",
+      statusCode: 404,
+      code: "NOT_FOUND",
+    });
+  }
+
+  // Build human feedback context from resolved answers
+  const feedbackLines: string[] = [];
+  for (const rf of resolvedFlags) {
+    feedbackLines.push(`[Resolved flag ${rf.id}]: ${rf.resolved_answer}`);
+  }
+  for (const rq of resolvedQuestions) {
+    feedbackLines.push(`[Resolved question ${rq.id}]: ${rq.resolved_answer}`);
+  }
+  const humanFeedback = feedbackLines.join("\n");
+
+  // Append feedback to the problem statement for the re-run
+  const enrichedInput = `${problemStatement}\n\n--- Human Feedback (from flag resolution) ---\n${humanFeedback}`;
+
+  // Create a new job and re-run the full pipeline with enriched input
+  const jobId = crypto.randomUUID();
+
+  let discoveryDocumentId: string | null = null;
+  if (dbAvailable()) {
+    const db = adminClient();
+    // Get current max version
+    const { data: existing } = await db
+      .from("discovery_documents")
+      .select("version")
+      .eq("project_id", projectId)
+      .order("version", { ascending: false })
+      .limit(1)
+      .single();
+
+    const nextVersion = (existing?.version ?? 0) + 1;
+
+    const { data } = await db
+      .from("discovery_documents")
+      .insert({
+        project_id: projectId,
+        version: nextVersion,
+        status: "draft",
+        document: {} as Json,
+        has_blockers: true,
+      })
+      .select("id")
+      .single();
+    if (data) discoveryDocumentId = data.id;
+  }
+
+  const job: ExplorerJob = {
+    id: jobId,
+    projectId,
+    discoveryDocumentId,
+    status: "running",
+    events: [],
+    result: null,
+    error: null,
+  };
+  jobs.set(jobId, job);
+
+  runExplorer(job, enrichedInput);
+
+  return c.json({ job_id: jobId, status: "running" }, 202);
+});
+
 // ─── Background explorer runner ──────────────────────────────────────────────
 
 async function recordAgentRun(
