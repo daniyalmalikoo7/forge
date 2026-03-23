@@ -4,6 +4,8 @@ import { streamSSE } from "hono/streaming";
 import { adminClient } from "../lib/supabase.ts";
 import { appError } from "../lib/errors.ts";
 import { explorerGraph, type ExplorerState } from "@forge/agents";
+import { validateReadyForSystem2 } from "@forge/schema";
+import type { Json } from "../lib/database.types.ts";
 
 // ─── Validation schemas ──────────────────────────────────────────────────────
 
@@ -32,8 +34,6 @@ function getJobForProject(projectId: string): ExplorerJob | undefined {
   }
   return undefined;
 }
-
-// ─── DB helpers (return null on failure so callers can fall back) ─────────────
 
 function dbAvailable(): boolean {
   return (
@@ -90,7 +90,6 @@ projectsRouter.post("/", async (c) => {
     return c.json({ project_id: id, name, slug, status: "created" }, 201);
   }
 
-  // DB not available — return project anyway for development
   return c.json(
     {
       project_id: id,
@@ -119,7 +118,6 @@ projectsRouter.get("/:id", async (c) => {
     if (!error && data) return c.json(data);
   }
 
-  // Fallback: check in-memory jobs
   const job = getJobForProject(id);
   if (job) {
     return c.json({
@@ -140,17 +138,26 @@ projectsRouter.post("/:id/explore", async (c) => {
   const projectId = c.req.param("id");
   const jobId = crypto.randomUUID();
 
-  // Try to get problem_statement from DB
+  // 1. Load project from Supabase
   let problemStatement: string | null = null;
 
   if (dbAvailable()) {
     const db = adminClient();
-    const { data } = await db
+    const { data, error } = await db
       .from("projects")
-      .select("problem_statement")
+      .select("problem_statement, status")
       .eq("id", projectId)
       .single();
-    if (data) problemStatement = data.problem_statement;
+
+    if (error || !data) {
+      throw appError({
+        message: "Project not found",
+        statusCode: 404,
+        code: "NOT_FOUND",
+      });
+    }
+
+    problemStatement = data.problem_statement;
 
     // Update project status to exploring
     await db
@@ -159,7 +166,7 @@ projectsRouter.post("/:id/explore", async (c) => {
       .eq("id", projectId);
   }
 
-  // Fall back to request body
+  // Fall back to request body if DB not available
   if (!problemStatement) {
     const body = await c.req.json().catch(() => ({}));
     const ps = (body as Record<string, unknown>)["problem_statement"];
@@ -177,7 +184,7 @@ projectsRouter.post("/:id/explore", async (c) => {
     });
   }
 
-  // Create discovery_documents row
+  // 2. Create discovery_documents row with status 'draft'
   let discoveryDocumentId: string | null = null;
   if (dbAvailable()) {
     const db = adminClient();
@@ -187,7 +194,7 @@ projectsRouter.post("/:id/explore", async (c) => {
         project_id: projectId,
         version: 1,
         status: "draft",
-        document: {},
+        document: {} as Json,
         has_blockers: true,
       })
       .select("id")
@@ -198,7 +205,7 @@ projectsRouter.post("/:id/explore", async (c) => {
   const job: ExplorerJob = {
     id: jobId,
     projectId,
-    discoveryDocumentId: discoveryDocumentId,
+    discoveryDocumentId,
     status: "running",
     events: [],
     result: null,
@@ -206,7 +213,7 @@ projectsRouter.post("/:id/explore", async (c) => {
   };
   jobs.set(jobId, job);
 
-  // Run explorer in the background
+  // 3. Run explorer in the background
   runExplorer(job, problemStatement);
 
   return c.json({ job_id: jobId, status: "running" }, 202);
@@ -250,7 +257,7 @@ projectsRouter.get("/:id/explore/stream", (c) => {
       sentIndex++;
     }
 
-    // Send final status
+    // Final event
     if (job.status === "complete" && job.result) {
       await stream.writeSSE({
         event: "complete",
@@ -285,7 +292,6 @@ projectsRouter.get("/:id/discovery", async (c) => {
     if (!error && data) return c.json(data);
   }
 
-  // Fallback: check in-memory job
   const job = getJobForProject(projectId);
   if (job?.result?.discovery_document) {
     return c.json(job.result.discovery_document);
@@ -302,7 +308,7 @@ projectsRouter.get("/:id/discovery", async (c) => {
 projectsRouter.post("/:id/discovery/approve", async (c) => {
   const projectId = c.req.param("id");
 
-  if (!(dbAvailable())) {
+  if (!dbAvailable()) {
     throw appError({
       message: "Database required for approval",
       statusCode: 503,
@@ -337,9 +343,9 @@ async function recordAgentRun(
   job: ExplorerJob,
   agentName: string,
   status: "running" | "complete" | "failed",
-  data: { input?: unknown; output?: unknown; confidence?: number; flags?: unknown; error?: string }
+  data: { input?: unknown; output?: unknown; confidence?: number | null; flags?: unknown; error?: string }
 ) {
-  if (!(dbAvailable())) return;
+  if (!dbAvailable()) return;
 
   const db = adminClient();
   if (status === "running") {
@@ -348,16 +354,16 @@ async function recordAgentRun(
       discovery_document_id: job.discoveryDocumentId,
       agent_name: agentName,
       status: "running",
-      input: (data.input ?? null) as import("../lib/database.types.ts").Json,
+      input: (data.input ?? null) as Json,
     });
   } else {
     await db
       .from("agent_runs")
       .update({
         status,
-        output: (data.output ?? null) as import("../lib/database.types.ts").Json,
+        output: (data.output ?? null) as Json,
         confidence: data.confidence ?? null,
-        flags: (data.flags ?? []) as import("../lib/database.types.ts").Json,
+        flags: (data.flags ?? []) as Json,
         error: data.error ?? null,
         completed_at: new Date().toISOString(),
       })
@@ -369,76 +375,111 @@ async function recordAgentRun(
 
 async function runExplorer(job: ExplorerJob, problemStatement: string) {
   try {
-    const stream = await explorerGraph.stream(
-      { input: problemStatement },
-      { streamMode: "updates" }
-    );
+    // Use invoke (single call) to get the final state — no double invocation
+    const finalState = await explorerGraph.invoke(
+      { input: problemStatement }
+    ) as ExplorerState;
 
-    for await (const event of stream) {
-      for (const [nodeName, update] of Object.entries(event)) {
-        const stateUpdate = update as Partial<ExplorerState>;
+    // Emit SSE events for each node that ran based on what's populated
+    const nodeResults: Array<{ name: string; confidence: number | null }> = [];
 
-        if (nodeName === "checkpoint") {
-          job.events.push({
-            event: "checkpoint",
-            data: {
-              type: "blocking_flags",
-              message: "Pipeline paused — blocking flags require human review",
-            },
-            timestamp: new Date().toISOString(),
-          });
-        } else {
-          const confidence =
-            (stateUpdate.clarification_result as Record<string, unknown> | null | undefined)?.["confidence"] as number | undefined ??
-            (stateUpdate.decomposition as Record<string, unknown> | null | undefined)?.["confidence"] as number | undefined ??
-            undefined;
+    if (finalState.clarification_result) {
+      nodeResults.push({ name: "clarifier", confidence: finalState.clarification_result.confidence });
+    }
+    if (finalState.decomposition) {
+      nodeResults.push({ name: "decomposer", confidence: finalState.decomposition.confidence });
+    }
+    if (finalState.research_result) {
+      nodeResults.push({ name: "research", confidence: finalState.research_result.confidence });
+    }
+    if (finalState.requirements_result) {
+      nodeResults.push({ name: "requirements", confidence: finalState.requirements_result.confidence });
+    }
+    if (finalState.discovery_document) {
+      nodeResults.push({
+        name: "synthesis",
+        confidence: finalState.discovery_document.overall_confidence,
+      });
+    }
 
-          job.events.push({
-            event: "node_complete",
-            data: {
-              node: nodeName,
-              confidence: confidence ?? null,
-              flags: stateUpdate.agent_flags ?? [],
-              current_node: stateUpdate.current_node,
-            },
-            timestamp: new Date().toISOString(),
-          });
+    if (finalState.current_node === "awaiting_human") {
+      // Pipeline was halted at a checkpoint
+      for (const nr of nodeResults) {
+        job.events.push({
+          event: "node_complete",
+          data: {
+            node: nr.name,
+            confidence: nr.confidence,
+            flags: finalState.agent_flags.filter(
+              (f) => f.agent === nr.name
+            ),
+            partial_state: { current_node: nr.name, errors: finalState.errors },
+          },
+          timestamp: new Date().toISOString(),
+        });
+      }
+      job.events.push({
+        event: "checkpoint",
+        data: {
+          type: "blocking_flags",
+          message: "Pipeline paused — blocking flags require human review",
+        },
+        timestamp: new Date().toISOString(),
+      });
+    } else {
+      // Pipeline ran to completion
+      for (const nr of nodeResults) {
+        job.events.push({
+          event: "node_complete",
+          data: {
+            node: nr.name,
+            confidence: nr.confidence,
+            flags: finalState.agent_flags.filter(
+              (f) => f.agent === nr.name
+            ),
+            partial_state: { current_node: nr.name, errors: finalState.errors },
+          },
+          timestamp: new Date().toISOString(),
+        });
 
-          // Record agent run completion in DB
-          await recordAgentRun(job, nodeName, "complete", {
-            output: stateUpdate,
-            confidence,
-            flags: stateUpdate.agent_flags,
-          });
-        }
+        // 4. Record agent runs in DB
+        await recordAgentRun(job, nr.name, "running", {
+          input: { problem_statement: problemStatement },
+        });
+        await recordAgentRun(job, nr.name, "complete", {
+          confidence: nr.confidence,
+          flags: finalState.agent_flags.filter((f) => f.agent === nr.name),
+        });
       }
     }
 
-    // Get final state
-    const finalState = await explorerGraph.invoke({ input: problemStatement });
     job.result = finalState;
     job.status = "complete";
 
-    // Save discovery document and update project status in DB
-    if (dbAvailable()) {
+    // 5. Save DiscoveryDocument to discovery_documents
+    // 6. Call validateReadyForSystem2
+    if (dbAvailable() && job.discoveryDocumentId) {
       const db = adminClient();
-      const hasBlockers = finalState.agent_flags.some(
-        (f: { severity: string; resolved: boolean }) =>
-          f.severity === "blocking" && !f.resolved
-      );
-      const docStatus = hasBlockers ? "pending_review" : "approved";
+      const doc = finalState.discovery_document;
 
-      if (job.discoveryDocumentId) {
-        await db
-          .from("discovery_documents")
-          .update({
-            status: docStatus,
-            document: (finalState.discovery_document ?? {}) as import("../lib/database.types.ts").Json,
-            overall_confidence: (finalState.discovery_document as Record<string, unknown> | null)?.["overall_confidence"] as number ?? null,
-            has_blockers: hasBlockers,
-          })
-          .eq("id", job.discoveryDocumentId);
+      let docStatus: "pending_review" | "approved" = "pending_review";
+      let hasBlockers = true;
+
+      if (doc) {
+        const readiness = validateReadyForSystem2(doc);
+        docStatus = readiness.ready ? "approved" : "pending_review";
+        hasBlockers = !readiness.ready;
       }
+
+      await db
+        .from("discovery_documents")
+        .update({
+          status: docStatus,
+          document: (doc ?? {}) as Json,
+          overall_confidence: doc?.overall_confidence ?? null,
+          has_blockers: hasBlockers,
+        })
+        .eq("id", job.discoveryDocumentId);
 
       await db
         .from("projects")

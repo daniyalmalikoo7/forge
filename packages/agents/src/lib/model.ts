@@ -6,41 +6,30 @@ type ModelOptions = {
   maxTokens?: number;
 };
 
-let _model: BaseChatModel | null = null;
-let _lastMaxTokens: number | undefined;
-
 export function getModel(opts: ModelOptions = {}): BaseChatModel {
-  const maxTokens = opts.maxTokens ?? 4096;
-
-  // Return cached model if maxTokens hasn't changed
-  if (_model && _lastMaxTokens === maxTokens) return _model;
-
   const provider = process.env["MODEL_PROVIDER"] ?? "anthropic";
 
   if (provider === "openrouter") {
     const apiKey = process.env["OPENROUTER_API_KEY"];
     if (!apiKey) throw new Error("OPENROUTER_API_KEY env var is required when MODEL_PROVIDER=openrouter");
 
-    _model = new ChatOpenAI({
+    return new ChatOpenAI({
       modelName: "google/gemini-2.5-flash",
       apiKey,
       temperature: 0,
-      maxTokens,
+      maxTokens: opts.maxTokens ?? 4096,
       configuration: {
         baseURL: "https://openrouter.ai/api/v1",
       },
     });
-  } else {
-    const apiKey = process.env["ANTHROPIC_API_KEY"];
-    if (!apiKey) throw new Error("ANTHROPIC_API_KEY env var is required when MODEL_PROVIDER=anthropic");
-
-    _model = new ChatAnthropic({
-      modelName: "claude-sonnet-4-5-20250514",
-      temperature: 0,
-      maxTokens,
-    });
   }
 
-  _lastMaxTokens = maxTokens;
-  return _model;
+  const apiKey = process.env["ANTHROPIC_API_KEY"];
+  if (!apiKey) throw new Error("ANTHROPIC_API_KEY env var is required when MODEL_PROVIDER=anthropic");
+
+  return new ChatAnthropic({
+    modelName: "claude-sonnet-4-5-20250514",
+    temperature: 0,
+    maxTokens: opts.maxTokens ?? 4096,
+  });
 }
