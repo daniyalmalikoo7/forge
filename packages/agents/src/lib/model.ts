@@ -9,6 +9,21 @@ type ModelOptions = {
 export function getModel(opts: ModelOptions = {}): BaseChatModel {
   const provider = process.env["MODEL_PROVIDER"] ?? "anthropic";
 
+  if (provider === "groq") {
+    const apiKey = process.env["GROQ_API_KEY"];
+    if (!apiKey) throw new Error("GROQ_API_KEY env var is required when MODEL_PROVIDER=groq");
+
+    return new ChatOpenAI({
+      modelName: "llama-3.3-70b-versatile",
+      apiKey,
+      temperature: 0,
+      maxTokens: opts.maxTokens ?? 4096,
+      configuration: {
+        baseURL: "https://api.groq.com/openai/v1",
+      },
+    });
+  }
+
   if (provider === "openrouter") {
     const apiKey = process.env["OPENROUTER_API_KEY"];
     if (!apiKey) throw new Error("OPENROUTER_API_KEY env var is required when MODEL_PROVIDER=openrouter");
